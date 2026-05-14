@@ -46,6 +46,8 @@ next-env.d.ts
 /02_INGESTION.md
 /03_API_AND_SCORING.md
 /04_UI_SEARCH.md
+/04b_UI_POLISH.md
+/04c_SENTINEL_REBUILD.md
 /AGENTS.md
 /CLAUDE.md
 /.claude/
