@@ -32,6 +32,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +40,15 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local build notes / AI working files
+/01_SUPABASE_SETUP.md
+/02_INGESTION.md
+/03_API_AND_SCORING.md
+/04_UI_SEARCH.md
+/AGENTS.md
+/CLAUDE.md
+/.claude/
+
+# local raw OFAC data (re-download from ofac.treasury.gov)
+/data/
