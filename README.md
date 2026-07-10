@@ -1,23 +1,34 @@
-# Sanctions Screener
+# Sentinel — Sanctions Screener
 
-A fuzzy-matching web tool for screening names against the U.S. Treasury OFAC Specially Designated Nationals (SDN) list. Built for compliance / KYB / KYC workflows where exact-string matching misses misspellings, transliteration variants (e.g. *Mohammed* / *Muhammad*), and partial aliases.
+A fuzzy-matching web tool for screening names against the U.S. Treasury OFAC Specially Designated Nationals (SDN) list. Built for compliance / KYB / KYC workflows where exact-string matching misses misspellings, transliteration variants (e.g. *Mohammed* / *Muhammad*), reversed word order, and partial aliases.
+
+Shares a design system with [HubSpot Health Check](https://github.com/arnaudchacon/hubspot-audit) — same warm-paper surfaces, ink actions, and serif display type across both tools.
 
 ## What it does
 
-A user types a person's or entity's name. The tool returns ranked candidate matches from ~12,000 sanctioned entities and ~18,000 aliases, each scored on a tunable 0–1 confidence scale and bucketed into four match tiers: **strong / probable / weak / noise**.
+- **Single-name screening** — type a name, get ranked candidates from ~19,000 sanctioned entities and ~20,000 aliases, each scored 0–1 and bucketed into **strong / probable / weak / noise** tiers, with a full per-signal score decomposition.
+- **Batch screening** — paste up to 100 names (or upload a CSV) and screen the whole list in one run: per-name top hit, tier summary (flagged / to review / clear), expandable candidates, batch CSV export.
+- **Adjudication** — every hit takes an analyst disposition (confirm / clear as false positive / escalate), stored in the browser and exportable as an audit-log CSV. A print stylesheet turns any result set into a screening report PDF.
 
-Scoring combines three signals in PostgreSQL:
+## Scoring (v3)
+
+Scoring runs in PostgreSQL (`sql/001_screen_name_v3.sql` + `002…perf.sql`):
 
 ```text
-weighted_score = primary_name_similarity × 0.40
-               + best_alias_similarity   × 0.40
-               + phonetic_match          × 0.20
+weighted_score = primary_name_score × 0.40
+               + best_known_name    × 0.40
+               + phonetic_match     × 0.20
 ```
 
-- **Levenshtein similarity** — `1 − (edit_distance / max_length)`, normalized 0–1. Catches typos, missing letters, and transposed characters.
-- **Best alias similarity** — same calculation applied across every known alias of the candidate; the highest wins.
-- **Phonetic match** — tokenized Soundex, applied per-word, so transliteration variants line up even when Levenshtein gives them mediocre scores.
-- **Substring containment** — acts as a floor (≥ 0.60) so a clean substring hit never gets buried.
+Each name is scored three ways and the best wins:
+
+- **Levenshtein similarity** — `1 − (edit_distance / max_length)`, normalized 0–1. Catches typos, missing letters, transposed characters.
+- **Token-set similarity** — every query token is matched to its best counterpart among the name's tokens, with a coverage factor. This is what makes *"Vladimir Putin"* find *"PUTIN, Vladimir Vladimirovich"* (OFAC stores individuals as `LAST, First`) — full-string edit distance alone buried it below unrelated Vladimirs.
+- **Substring containment** — a ≥ 0.60 floor so a clean substring hit never gets buried.
+
+Plus **tokenized Soundex** as the phonetic signal, and the same scoring applied across every alias — the *best known name* fills the alias slot (falling back to the primary name), so an entity with no aliases isn't capped below the strong tier.
+
+Candidate recall uses three indexed trigram probes (raw name, containment, and a token-sorted expression index), bounded to the top 400 candidates by cheap similarity before full scoring — queries run in ~100–800 ms. A regression harness (`scripts/eval-scoring.ts`) pins the behavior.
 
 The user-tunable threshold reflects a deliberate design call: false positives erode operator trust faster than missed matches, so the human decides where to cut.
 
@@ -45,9 +56,17 @@ OFAC CSV files  →  scripts/ingest.ts  →  Supabase
                                                        │
                                                        ▼
                                                screen_name() SQL function
+                                              (sql/*.sql via scripts/apply-sql.ts)
                                                        │
                                                        ▼
-                                          Next.js  /api/screen  →  UI
+                              Next.js  /api/screen · /api/screen-batch  →  UI
+```
+
+SQL changes are versioned in `sql/` and applied with:
+
+```bash
+npx tsx scripts/apply-sql.ts sql/001_screen_name_v3.sql
+npx tsx scripts/apply-sql.ts sql/002_screen_name_v3_perf.sql
 ```
 
 ## Local development

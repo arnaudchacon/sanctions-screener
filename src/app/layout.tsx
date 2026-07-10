@@ -1,14 +1,16 @@
 // src/app/layout.tsx
-// Loads IBM Plex Sans + JetBrains Mono and sets Sentinel metadata.
+// Fonts + chrome. Shares the Health Check design system: Inter body,
+// Instrument Serif display, JetBrains Mono data.
 
 import type { Metadata } from 'next';
-import { IBM_Plex_Sans, JetBrains_Mono } from 'next/font/google';
+import { Inter, JetBrains_Mono, Instrument_Serif } from 'next/font/google';
 import './globals.css';
+import { Nav } from '@/components/Nav';
+import { Footer } from '@/components/Footer';
 
-const ibmPlex = IBM_Plex_Sans({
+const inter = Inter({
   subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-ibm-plex',
+  variable: '--font-inter',
   display: 'swap',
 });
 
@@ -19,10 +21,17 @@ const jetbrains = JetBrains_Mono({
   display: 'swap',
 });
 
+const instrumentSerif = Instrument_Serif({
+  subsets: ['latin'],
+  weight: '400',
+  variable: '--font-instrument',
+  display: 'swap',
+});
+
 export const metadata: Metadata = {
-  title: 'Sentinel — Sanctions Screener',
+  title: 'Sentinel — OFAC Sanctions Screening',
   description:
-    'Fuzzy name matching against the U.S. Treasury OFAC SDN list. Weighted Levenshtein, tokenized Soundex, and substring containment.',
+    'Fuzzy name screening against the U.S. Treasury OFAC SDN list. Token-set Levenshtein, tokenized Soundex, and substring containment — with batch screening and an adjudication log.',
 };
 
 export default function RootLayout({
@@ -31,8 +40,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${ibmPlex.variable} ${jetbrains.variable}`}>
-      <body className="antialiased">{children}</body>
+    <html lang="en" className={`${inter.variable} ${jetbrains.variable} ${instrumentSerif.variable}`}>
+      <body className="antialiased">
+        <Nav />
+        {children}
+        <Footer />
+      </body>
     </html>
   );
 }

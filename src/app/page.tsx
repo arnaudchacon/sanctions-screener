@@ -1,65 +1,35 @@
 // src/app/page.tsx
-// Sentinel — Sanctions Screener
-// Reads from /api/stats, /api/programs, /api/screen.
+// Sentinel — screening console. Reads /api/stats, /api/programs, /api/screen.
 
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
+import type { ScreenResponse, Stats, Program } from '@/lib/types';
+import { ThresholdSlider } from '@/components/ThresholdSlider';
+import { ResultsTable } from '@/components/ResultsTable';
+import { ScoringMethodology } from '@/components/ScoringMethodology';
+import { BatchScreen } from '@/components/BatchScreen';
+import { RecentScreenings, ProgramsList, AuditLog, type HistoryItem } from '@/components/Sidebar';
+import { TIER_COLOR } from '@/components/TierBadge';
+import { downloadCsv } from '@/lib/csv';
 
-// ─────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────
-
-type Match = {
-  ent_num: number;
-  sdn_name: string;
-  sdn_type: string | null;
-  program: string | null;
-  primary_name_score: number;
-  best_alias_score: number;
-  best_alias_name: string | null;
-  phonetic_score: number;
-  weighted_score: number;
-  match_tier: 'strong' | 'probable' | 'weak' | 'noise';
-};
-
-type ScreenResponse = {
-  query: string;
-  min_score: number;
-  max_results: number;
-  program: string | null;
-  match_count: number;
-  matches: Match[];
-};
-
-type Stats = { entity_count: number; last_refreshed: string | null };
-type Program = { code: string; count: number };
-type HistoryItem = { q: string; n: number; tier: Match['match_tier']; at: number };
-
-// ─────────────────────────────────────────────
-// Static reference data
-// ─────────────────────────────────────────────
-
-const EXAMPLE_QUERIES = ['Mohammed', 'Aerocaribbean Airlines', 'Banco Nacional', 'Putin'];
+const EXAMPLE_QUERIES = ['Vladimir Putin', 'Aerocaribbean Airlines', 'Mohammed', 'Banco Nacional'];
 const HISTORY_KEY = 'sentinel.history.v1';
-const SIDEBAR_PROGRAM_LIMIT = 10;
 
-// ─────────────────────────────────────────────
-// Page
-// ─────────────────────────────────────────────
+type Mode = 'single' | 'batch';
 
 export default function HomePage() {
+  const [mode, setMode] = useState<Mode>('single');
   const [query, setQuery] = useState('');
   const [threshold, setThreshold] = useState(0.5);
   const [program, setProgram] = useState('');
-  const [sort, setSort] = useState<'score' | 'name' | 'program'>('score');
   const [results, setResults] = useState<ScreenResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [programs, setPrograms] = useState<Program[]>([]);
-  const [openId, setOpenId] = useState<number | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [auditVersion, setAuditVersion] = useState(0);
 
   useEffect(() => {
     fetch('/api/stats')
@@ -83,7 +53,6 @@ export default function HomePage() {
     if (!q) return;
     setLoading(true);
     setError(null);
-    setOpenId(null);
     try {
       const response = await fetch('/api/screen', {
         method: 'POST',
@@ -101,8 +70,12 @@ export default function HomePage() {
       }
       const data: ScreenResponse = await response.json();
       setResults(data);
-      const topTier = data.matches[0]?.match_tier ?? 'noise';
-      const entry: HistoryItem = { q, n: data.match_count, tier: topTier, at: Date.now() };
+      const entry: HistoryItem = {
+        q,
+        n: data.match_count,
+        tier: data.matches[0]?.match_tier ?? 'noise',
+        at: Date.now(),
+      };
       const next = [entry, ...history.filter((h) => h.q !== q)].slice(0, 8);
       setHistory(next);
       try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)); } catch {}
@@ -114,842 +87,253 @@ export default function HomePage() {
     }
   }
 
-  const sorted = useMemo(() => {
-    if (!results) return [];
-    const rows = [...results.matches];
-    if (sort === 'score')   rows.sort((a, b) => b.weighted_score - a.weighted_score);
-    if (sort === 'name')    rows.sort((a, b) => a.sdn_name.localeCompare(b.sdn_name));
-    if (sort === 'program') rows.sort((a, b) => (a.program || '').localeCompare(b.program || ''));
-    return rows;
-  }, [results, sort]);
+  const tierCounts = results
+    ? {
+        strong: results.matches.filter((m) => m.match_tier === 'strong').length,
+        probable: results.matches.filter((m) => m.match_tier === 'probable').length,
+        weak: results.matches.filter((m) => m.match_tier === 'weak').length,
+      }
+    : null;
 
-  const tierCounts = useMemo(() => {
-    const init = { strong: 0, probable: 0, weak: 0, noise: 0 };
-    sorted.forEach((m) => (init[m.match_tier] += 1));
-    return init;
-  }, [sorted]);
-
-  const currentTier = thresholdToTier(threshold);
+  function exportSingleCsv() {
+    if (!results) return;
+    downloadCsv(
+      `sentinel-${results.query.replace(/[^a-z0-9]/gi, '-').slice(0, 40)}-${new Date().toISOString().split('T')[0]}.csv`,
+      ['rank', 'sdn_entity', 'best_alias', 'type', 'program', 'primary_score', 'alias_score', 'phonetic_score', 'weighted_score', 'tier', 'sdn_number'],
+      results.matches.map((m, i) => [
+        i + 1, m.sdn_name, m.best_alias_name, m.sdn_type, m.program,
+        m.primary_name_score.toFixed(4), m.best_alias_score.toFixed(4),
+        m.phonetic_score.toFixed(4), m.weighted_score.toFixed(4),
+        m.match_tier, m.ent_num,
+      ])
+    );
+  }
 
   return (
-    <main style={{ background: 'var(--c-paper)', color: 'var(--c-ink)', minHeight: '100vh' }}>
+    <main className="min-h-screen bg-bg">
+      <div className="max-w-[1100px] mx-auto px-6 py-10">
 
-      {/* Top chrome — lockup + live pill, nav and multi-jurisdiction eyebrow removed */}
-      <header
-        style={{
-          borderBottom: '1px solid var(--c-line)',
-          background: 'var(--c-surface)',
-          padding: '14px 32px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 28,
-        }}
-      >
-        <Lockup />
-        <div style={{ flex: 1 }} />
-        <div style={{ display: 'flex', gap: 14, alignItems: 'center', fontSize: 11 }}>
-          <span
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '4px 10px',
-              background: 'color-mix(in oklch, oklch(55% 0.14 150) 12%, transparent)',
-              color: 'oklch(38% 0.14 150)',
-              border: '1px solid color-mix(in oklch, oklch(55% 0.14 150) 30%, transparent)',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 10,
-              letterSpacing: '0.12em',
-              textTransform: 'uppercase',
-              fontWeight: 500,
-            }}
-          >
-            <span
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: '50%',
-                background: 'oklch(55% 0.14 150)',
-                animation: 's-pulse 1.6s infinite',
-              }}
+        {/* Title */}
+        <div className="mb-8">
+          <p className="eyebrow mb-2 no-print" style={{ color: 'var(--accent)' }}>
+            OFAC SDN · fuzzy name screening
+          </p>
+          <h1 className="font-serif text-[36px] leading-tight tracking-[-0.01em] text-text-primary mb-2">
+            Screening console
+          </h1>
+          <p className="text-[14px] text-text-secondary max-w-[620px] leading-relaxed no-print">
+            Screen counterparty names against the U.S. Treasury SDN list. Token-set Levenshtein
+            handles reversed word order and middle names; tokenized Soundex catches
+            transliteration variants; every hit takes an auditable disposition.
+          </p>
+        </div>
+
+        {/* Stat strip */}
+        <div className="grid grid-cols-2 md:grid-cols-4 rounded-xl border border-border bg-surface-elevated overflow-hidden mb-8 no-print">
+          <Stat label="Source" value="OFAC SDN" sub="U.S. Treasury" />
+          <Stat label="Entities indexed" value={stats ? stats.entity_count.toLocaleString() : '—'} sub="public domain" />
+          <Stat label="Last refresh" value={stats?.last_refreshed ? formatDate(stats.last_refreshed) : '—'} sub="ingestion log" />
+          <Stat label="Programs" value={programs.length > 0 ? String(programs.length) : '—'} sub="distinct codes" last />
+        </div>
+
+        <div className="grid lg:grid-cols-[260px_1fr] gap-6 items-start">
+
+          {/* Sidebar */}
+          <aside className="flex flex-col gap-4 no-print">
+            <RecentScreenings
+              history={history}
+              current={query}
+              onPick={(h) => { setMode('single'); setQuery(h.q); handleSearch(h.q); }}
             />
-            Live · OFAC SDN
-          </span>
-        </div>
-      </header>
+            <ProgramsList
+              programs={programs}
+              active={program}
+              onPick={(code) => setProgram(program === code ? '' : code)}
+            />
+            <AuditLog version={auditVersion} />
+          </aside>
 
-      {/* Stat strip — all values now sourced from real APIs */}
-      <div style={{ padding: '20px 32px 0' }}>
-        <div className="s-stat-strip">
-          <Stat label="Source"           value="OFAC SDN" sub="U.S. TREASURY" />
-          <Stat label="Entities indexed" value={stats ? stats.entity_count.toLocaleString() : '—'} sub="public-domain" />
-          <Stat label="Last refresh"     value={stats?.last_refreshed ? formatRefreshDate(stats.last_refreshed) : '—'} sub="from ingestion log" />
-          <Stat label="Programs covered" value={programs.length > 0 ? programs.length.toString() : '—'} sub="distinct codes" />
-        </div>
-      </div>
+          {/* Main column */}
+          <section className="flex flex-col gap-5 min-w-0">
 
-      {/* Body grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', padding: '24px 32px 40px', gap: 24 }}>
-
-        {/* Sidebar */}
-        <aside style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-          <RecentScreenings history={history} onPick={(h) => { setQuery(h.q); handleSearch(h.q); }} current={query} />
-          <ProgramsList
-            programs={programs}
-            active={program}
-            onPick={(code) => setProgram(program === code ? '' : code)}
-          />
-        </aside>
-
-        {/* Main */}
-        <section style={{ display: 'flex', flexDirection: 'column', gap: 22, minWidth: 0 }}>
-
-          {/* Page title */}
-          <div>
-            <div className="s-eyebrow" style={{ color: 'var(--c-brand)' }}>
-              Sanctions screening / Single name
-            </div>
-            <h1
-              style={{
-                fontSize: 32,
-                fontWeight: 600,
-                letterSpacing: '-0.025em',
-                margin: '8px 0 6px',
-              }}
-            >
-              Name screening console
-            </h1>
-            <p style={{ fontSize: 14, color: 'var(--c-muted)', margin: 0, maxWidth: 640, lineHeight: 1.55 }}>
-              Fuzzy match a single counterparty against OFAC SDN. Weighted Levenshtein + tokenized Soundex + substring containment.
-            </p>
-          </div>
-
-          {/* Command bar — Bulk CSV button removed, grid now 2 columns */}
-          <div className="s-panel s-corner-ticks" style={{ padding: 20 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12 }}>
-              <div style={{ position: 'relative' }}>
-                <span
-                  style={{
-                    position: 'absolute',
-                    left: 14,
-                    top: '50%',
-                    transform: 'translateY(-50%)',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 11,
-                    color: 'var(--c-strong)',
-                    pointerEvents: 'none',
-                    fontWeight: 600,
-                    letterSpacing: '0.04em',
-                  }}
-                >
-                  Q&nbsp;&gt;
-                </span>
-                <input
-                  className="s-input"
-                  style={{ paddingLeft: 42, fontSize: 16, fontWeight: 500, height: 50 }}
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                  placeholder="Counterparty name or entity"
-                />
-              </div>
-              <button
-                className="s-btn"
-                style={{ height: 50, padding: '0 22px' }}
-                onClick={() => handleSearch()}
-                disabled={loading || !query.trim()}
-              >
-                {loading ? 'Screening…' : 'Screen'}
-              </button>
-            </div>
-
-            <div style={{ marginTop: 12, fontSize: 12, color: 'var(--c-muted)' }}>
-              Try:{' '}
-              {EXAMPLE_QUERIES.map((ex, i) => (
-                <span key={ex}>
+            {/* Command panel */}
+            <div className="panel no-print">
+              {/* Mode tabs */}
+              <div className="flex border-b border-border bg-surface">
+                {(['single', 'batch'] as Mode[]).map((m) => (
                   <button
-                    onClick={() => { setQuery(ex); handleSearch(ex); }}
-                    style={{
-                      background: 'none',
-                      border: 0,
-                      padding: 0,
-                      color: 'var(--c-ink)',
-                      textDecoration: 'underline',
-                      textDecorationColor: 'var(--c-faint)',
-                      textUnderlineOffset: 3,
-                      cursor: 'pointer',
-                      fontFamily: 'inherit',
-                      fontSize: 12,
-                    }}
+                    key={m}
+                    onClick={() => setMode(m)}
+                    className={`px-5 py-3 text-[13px] font-medium border-b-2 -mb-px transition-colors duration-100 ${
+                      mode === m
+                        ? 'border-accent text-text-primary bg-surface-elevated'
+                        : 'border-transparent text-text-tertiary hover:text-text-secondary'
+                    }`}
                   >
-                    {ex}
+                    {m === 'single' ? 'Single name' : 'Batch screening'}
                   </button>
-                  {i < EXAMPLE_QUERIES.length - 1 && ', '}
-                </span>
-              ))}
-            </div>
-
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '1.4fr 1fr 1fr',
-                gap: 28,
-                marginTop: 18,
-                paddingTop: 18,
-                borderTop: '1px solid var(--c-line)',
-              }}
-            >
-              <ThresholdSlider value={threshold} onChange={setThreshold} tier={currentTier} />
-
-              <div>
-                <div className="s-eyebrow" style={{ marginBottom: 8 }}>Program filter</div>
-                <input
-                  className="s-input s-input-mono"
-                  value={program}
-                  onChange={(e) => setProgram(e.target.value)}
-                  placeholder="e.g. SDGT, RUSSIA-EO14024"
-                  style={{ height: 36 }}
-                />
+                ))}
               </div>
 
-              <div>
-                <div className="s-eyebrow" style={{ marginBottom: 8 }}>Sort</div>
-                <Segmented value={sort} onChange={(v) => setSort(v as 'score' | 'name' | 'program')} options={[
-                  { id: 'score',   l: 'Score' },
-                  { id: 'name',    l: 'Name' },
-                  { id: 'program', l: 'Program' },
-                ]} />
-              </div>
-            </div>
-          </div>
+              <div className="p-5">
+                {mode === 'single' ? (
+                  <>
+                    <div className="grid grid-cols-[1fr_auto] gap-3">
+                      <input
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                        placeholder="Counterparty name or entity"
+                        className="h-12 rounded-lg border border-border-strong bg-surface-elevated px-4 text-[15px] font-medium text-text-primary outline-none focus:border-ink"
+                      />
+                      <button
+                        onClick={() => handleSearch()}
+                        disabled={loading || !query.trim()}
+                        className="h-12 bg-ink text-bg px-6 rounded-lg text-[14px] font-medium hover:bg-ink-hover transition-colors duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {loading ? 'Screening…' : 'Screen'}
+                      </button>
+                    </div>
 
-          {/* Error */}
-          {error && (
-            <div
-              style={{
-                padding: '12px 16px',
-                background: 'color-mix(in oklch, var(--c-strong) 6%, transparent)',
-                border: '1px solid color-mix(in oklch, var(--c-strong) 30%, transparent)',
-                color: 'var(--c-strong)',
-                fontSize: 13,
-              }}
-            >
-              {error}
-            </div>
-          )}
-
-          {/* Results header / body — PDF button removed, CSV button now functional */}
-          {results && (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-                <div className="s-mono" style={{ fontSize: 12, color: 'var(--c-muted)', letterSpacing: '0.04em' }}>
-                  <span style={{ color: 'var(--c-ink)', fontWeight: 600 }}>{results.match_count} matches</span>
-                  {'  ·  '}query <span style={{ color: 'var(--c-ink)' }}>&quot;{results.query}&quot;</span>
-                  {'  ·  '}threshold <span style={{ color: 'var(--c-ink)' }}>{results.min_score.toFixed(2)}</span>
-                  {results.program && (<>{'  ·  '}program <span style={{ color: 'var(--c-strong)' }}>{results.program}</span></>)}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, color: 'var(--c-muted)' }}>
-                  <TierLegend count={tierCounts.strong}   tier="strong"   />
-                  <TierLegend count={tierCounts.probable} tier="probable" />
-                  <TierLegend count={tierCounts.weak}     tier="weak"     />
-                  <span style={{ width: 1, height: 14, background: 'var(--c-line-2)', margin: '0 6px' }} />
-                  <button
-                    className="s-btn s-btn-sm s-btn-ghost"
-                    onClick={() => exportToCSV(results)}
-                    disabled={results.matches.length === 0}
-                  >
-                    Export · CSV
-                  </button>
-                </div>
-              </div>
-
-              <div className="s-panel" style={{ padding: 0, overflow: 'hidden' }}>
-                {sorted.length === 0 ? (
-                  <div style={{ padding: 56, textAlign: 'center', color: 'var(--c-muted)', fontSize: 13 }}>
-                    No matches above threshold {results.min_score.toFixed(2)}. Try lowering minimum confidence or removing the program filter.
-                  </div>
-                ) : (
-                  <table className="s-table">
-                    <thead>
-                      <tr>
-                        <th style={{ width: 36 }}>#</th>
-                        <th>Entity / alias</th>
-                        <th>Type</th>
-                        <th>Program</th>
-                        <th>Weighted</th>
-                        <th>Tier</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sorted.map((m, i) => (
-                        <ResultRow
-                          key={m.ent_num}
-                          idx={i}
-                          match={m}
-                          isOpen={openId === m.ent_num}
-                          onToggle={() => setOpenId(openId === m.ent_num ? null : m.ent_num)}
-                        />
+                    <div className="mt-2.5 text-[12px] text-text-tertiary">
+                      Try:{' '}
+                      {EXAMPLE_QUERIES.map((ex, i) => (
+                        <span key={ex}>
+                          <button
+                            onClick={() => { setQuery(ex); handleSearch(ex); }}
+                            className="text-text-secondary underline decoration-border-strong underline-offset-2 hover:text-accent transition-colors duration-100"
+                          >
+                            {ex}
+                          </button>
+                          {i < EXAMPLE_QUERIES.length - 1 && ', '}
+                        </span>
                       ))}
-                    </tbody>
-                  </table>
+                    </div>
+                  </>
+                ) : (
+                  <BatchScreen minScore={threshold} program={program} />
                 )}
+
+                {/* Shared controls */}
+                <div className="grid sm:grid-cols-[1.4fr_1fr] gap-7 mt-5 pt-5 border-t border-border">
+                  <ThresholdSlider value={threshold} onChange={setThreshold} />
+                  <div>
+                    <div className="eyebrow mb-2">Program filter</div>
+                    <input
+                      value={program}
+                      onChange={(e) => setProgram(e.target.value)}
+                      placeholder="e.g. SDGT, RUSSIA-EO14024"
+                      className="w-full h-9 rounded-md border border-border-strong bg-surface-elevated px-3 font-mono text-[12px] text-text-primary outline-none focus:border-ink"
+                    />
+                  </div>
+                </div>
               </div>
-            </>
-          )}
+            </div>
 
-          {loading && !results && <ResultsSkeleton />}
+            {/* Error */}
+            {error && (
+              <div
+                className="rounded-lg border px-4 py-3 text-[13px]"
+                style={{ borderColor: 'var(--tier-strong)', background: 'var(--tier-strong-bg)', color: 'var(--tier-strong)' }}
+              >
+                {error}
+              </div>
+            )}
 
-          {!results && !loading && <ScoringMethodology />}
+            {/* Single-mode results */}
+            {mode === 'single' && results && (
+              <>
+                {/* Print-only report header */}
+                <div className="hidden print:block border-b border-border pb-4">
+                  <h2 className="font-serif text-[22px] text-text-primary">Screening report</h2>
+                  <p className="text-[12px] text-text-secondary mt-1">
+                    Query &ldquo;{results.query}&rdquo; · threshold {results.min_score.toFixed(2)}
+                    {results.program ? ` · program ${results.program}` : ''} · {results.match_count} match{results.match_count !== 1 ? 'es' : ''} ·
+                    screened {new Date().toLocaleString()} against OFAC SDN ({stats?.entity_count.toLocaleString() ?? '—'} entities)
+                  </p>
+                </div>
 
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              paddingTop: 10,
-              fontSize: 11,
-              color: 'var(--c-muted)',
-              flexWrap: 'wrap',
-              gap: 8,
-            }}
-          >
-            <span>
-              Sentinel · OFAC SDN data licensed public-domain · Demonstration tool. Not a substitute for production sanctions screening software.
-            </span>
-            <span className="s-mono">© 2026 SENTINEL</span>
-          </div>
-        </section>
+                <div className="flex items-center justify-between flex-wrap gap-3 no-print">
+                  <div className="font-mono text-[12px] text-text-tertiary tracking-[0.02em]">
+                    <span className="text-text-primary font-semibold">{results.match_count} matches</span>
+                    {'  ·  '}query <span className="text-text-primary">&ldquo;{results.query}&rdquo;</span>
+                    {'  ·  '}threshold <span className="text-text-primary">{results.min_score.toFixed(2)}</span>
+                    {results.program && (<>{'  ·  '}program <span style={{ color: 'var(--accent)' }}>{results.program}</span></>)}
+                  </div>
+                  <div className="flex items-center gap-3 text-[12px] text-text-secondary">
+                    {tierCounts && (
+                      <>
+                        <Legend color={TIER_COLOR.strong} label={`${tierCounts.strong} strong`} />
+                        <Legend color={TIER_COLOR.probable} label={`${tierCounts.probable} probable`} />
+                        <Legend color={TIER_COLOR.weak} label={`${tierCounts.weak} weak`} />
+                        <span className="w-px h-3.5 bg-border-strong mx-1" />
+                      </>
+                    )}
+                    <button
+                      onClick={() => window.print()}
+                      className="text-text-secondary hover:text-text-primary font-medium transition-colors duration-100"
+                    >
+                      Export PDF
+                    </button>
+                    <button
+                      onClick={exportSingleCsv}
+                      disabled={results.matches.length === 0}
+                      className="text-text-secondary hover:text-text-primary font-medium transition-colors duration-100 disabled:opacity-50"
+                    >
+                      Export CSV
+                    </button>
+                  </div>
+                </div>
+
+                <ResultsTable
+                  results={results}
+                  onDispositionChange={() => setAuditVersion((v) => v + 1)}
+                />
+              </>
+            )}
+
+            {mode === 'single' && loading && !results && <Skeleton />}
+            {mode === 'single' && !results && !loading && <ScoringMethodology />}
+          </section>
+        </div>
       </div>
     </main>
   );
 }
 
-// ─────────────────────────────────────────────
-// Subcomponents
-// ─────────────────────────────────────────────
-
-function Lockup() {
+function Stat({ label, value, sub, last = false }: { label: string; value: string; sub: string; last?: boolean }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-      <svg width="22" height="22" viewBox="0 0 20 20" aria-hidden>
-        <rect x="2.5" y="2.5" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.2" transform="rotate(45 10 10)" />
-        <circle cx="10" cy="10" r="2.2" fill="currentColor" />
-        <line x1="10" y1="0" x2="10" y2="3.5" stroke="currentColor" strokeWidth="1" />
-        <line x1="10" y1="16.5" x2="10" y2="20" stroke="currentColor" strokeWidth="1" />
-        <line x1="0" y1="10" x2="3.5" y2="10" stroke="currentColor" strokeWidth="1" />
-        <line x1="16.5" y1="10" x2="20" y2="10" stroke="currentColor" strokeWidth="1" />
-      </svg>
-      <div style={{ lineHeight: 1 }}>
-        <div style={{ fontWeight: 600, letterSpacing: '0.02em', fontSize: 16, color: 'var(--c-ink)' }}>
-          SENTINEL
-        </div>
-        <div className="s-eyebrow" style={{ fontSize: 9, marginTop: 3 }}>
-          Compliance Intelligence
-        </div>
-      </div>
+    <div className={`px-5 py-4 ${last ? '' : 'md:border-r border-border'}`}>
+      <div className="eyebrow">{label}</div>
+      <div className="font-mono text-[22px] font-medium text-text-primary mt-1 tracking-[-0.01em]">{value}</div>
+      <div className="font-mono text-[10px] text-text-tertiary mt-0.5 uppercase tracking-[0.06em]">{sub}</div>
     </div>
   );
 }
 
-function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {
+function Legend({ color, label }: { color: string; label: string }) {
   return (
-    <div>
-      <div className="s-eyebrow">{label}</div>
-      <div className="s-stat-val">{value}</div>
-      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--c-muted)', marginTop: 3 }}>
-        {sub}
-      </div>
-    </div>
+    <span className="inline-flex items-center gap-1.5">
+      <span className="w-1.5 h-1.5 rounded-full" style={{ background: color }} />
+      {label}
+    </span>
   );
 }
 
-function ThresholdSlider({
-  value, onChange, tier,
-}: {
-  value: number;
-  onChange: (v: number) => void;
-  tier: 'strong' | 'probable' | 'weak' | 'noise';
-}) {
-  const min = 0.1, max = 0.95;
-  const p = ((value - min) / (max - min)) * 100;
+function Skeleton() {
   return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}>
-        <div className="s-eyebrow">Min. confidence threshold</div>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-          <span className="s-num" style={{ fontSize: 13 }}>{value.toFixed(2)}</span>
-          <span className="s-eyebrow" style={{ color: `var(--c-${tier})` }}>{tier}</span>
-        </div>
-      </div>
-      <input
-        type="range"
-        className="s-range"
-        min={min} max={max} step={0.01}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        style={{ '--p': `${p}%` } as React.CSSProperties}
-      />
-      <div style={{ position: 'relative', height: 14, marginTop: 2 }}>
-        {[
-          { v: 0.10, l: 'noise' },
-          { v: 0.40, l: 'weak' },
-          { v: 0.65, l: 'probable' },
-          { v: 0.80, l: 'strong' },
-        ].map((m) => (
-          <span
-            key={m.l}
-            className="s-eyebrow"
-            style={{
-              position: 'absolute',
-              left: `${((m.v - min) / (max - min)) * 100}%`,
-              fontSize: 9,
-              color: m.l === tier ? `var(--c-${tier})` : 'var(--c-dim)',
-              transform: m.v > 0.85 ? 'translateX(-100%)' : m.v < 0.15 ? 'none' : 'translateX(-30%)',
-            }}
-          >
-            {m.l}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function Segmented({
-  value, onChange, options,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: Array<{ id: string; l: string }>;
-}) {
-  return (
-    <div style={{ display: 'flex', border: '1px solid var(--c-line-2)' }}>
-      {options.map((o, i) => (
-        <button
-          key={o.id}
-          onClick={() => onChange(o.id)}
-          style={{
-            flex: 1,
-            border: 0,
-            borderRight: i < options.length - 1 ? '1px solid var(--c-line-2)' : 0,
-            padding: '9px 10px',
-            fontFamily: 'var(--font-mono)',
-            fontSize: 10,
-            letterSpacing: '0.1em',
-            textTransform: 'uppercase',
-            background: value === o.id ? 'var(--c-ink)' : 'transparent',
-            color: value === o.id ? 'var(--c-paper)' : 'var(--c-ink-2)',
-            cursor: 'pointer',
-          }}
-        >
-          {o.l}
-        </button>
+    <div className="panel p-3 flex flex-col gap-2">
+      {[1, 2, 3, 4].map((i) => (
+        <div key={i} className="h-14 rounded-lg bg-surface border border-border opacity-60 pulse" />
       ))}
     </div>
   );
 }
 
-function TierLegend({ count, tier }: { count: number; tier: Match['match_tier'] }) {
-  return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-      <span className="s-tier-dot" style={{ background: `var(--c-${tier})` }} />
-      {count} {tier}
-    </span>
-  );
-}
-
-function RecentScreenings({
-  history, onPick, current,
-}: {
-  history: HistoryItem[];
-  onPick: (h: HistoryItem) => void;
-  current: string;
-}) {
-  if (!history.length) return null;
-  return (
-    <div className="s-panel">
-      <div className="s-panel-head">
-        <span className="s-eyebrow s-eyebrow-ink">Recent screenings</span>
-        <span className="s-eyebrow">{history.length}</span>
-      </div>
-      <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-        {history.map((h, i) => (
-          <li
-            key={i}
-            onClick={() => onPick(h)}
-            style={{
-              padding: '11px 14px',
-              borderBottom: i < history.length - 1 ? '1px solid var(--c-line)' : 0,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              background: h.q === current ? 'var(--c-surface-2)' : 'transparent',
-            }}
-          >
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: `var(--c-${h.tier})`, flexShrink: 0 }} />
-            <span style={{ flex: 1, fontSize: 13, color: 'var(--c-ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {h.q}
-            </span>
-            <span className="s-num" style={{ fontSize: 10, color: 'var(--c-muted)' }}>{h.n}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function ProgramsList({
-  programs, active, onPick,
-}: {
-  programs: Program[];
-  active: string;
-  onPick: (code: string) => void;
-}) {
-  const shown = programs.slice(0, SIDEBAR_PROGRAM_LIMIT);
-  return (
-    <div className="s-panel">
-      <div className="s-panel-head">
-        <span className="s-eyebrow s-eyebrow-ink">Programs</span>
-        <span className="s-eyebrow">
-          {programs.length > 0 ? `${shown.length} / ${programs.length}` : '—'}
-        </span>
-      </div>
-      {programs.length === 0 ? (
-        <div style={{ padding: 14, fontSize: 12, color: 'var(--c-muted)' }}>
-          Loading…
-        </div>
-      ) : (
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-          {shown.map((p, i) => {
-            const isActive = active === p.code;
-            return (
-              <li
-                key={p.code}
-                onClick={() => onPick(p.code)}
-                style={{
-                  padding: '11px 14px',
-                  borderBottom: i < shown.length - 1 ? '1px solid var(--c-line)' : 0,
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  background: isActive ? 'color-mix(in oklch, var(--c-strong) 8%, transparent)' : 'transparent',
-                  borderLeft: isActive ? '2px solid var(--c-strong)' : '2px solid transparent',
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 11,
-                    color: isActive ? 'var(--c-strong)' : 'var(--c-ink-2)',
-                    flex: 1,
-                    fontWeight: isActive ? 600 : 500,
-                  }}
-                >
-                  {p.code}
-                </span>
-                <span className="s-num" style={{ fontSize: 10, color: 'var(--c-muted)' }}>
-                  {p.count.toLocaleString()}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-function ResultRow({
-  match, idx, isOpen, onToggle,
-}: {
-  match: Match;
-  idx: number;
-  isOpen: boolean;
-  onToggle: () => void;
-}) {
-  const tier = match.match_tier;
-  return (
-    <>
-      <tr className={`s-row-${tier} ${isOpen ? 'is-open' : ''}`} onClick={onToggle} style={{ cursor: 'pointer' }}>
-        <td style={{ width: 36, color: 'var(--c-faint)' }} className="s-num">
-          <span style={{ fontSize: 11 }}>{String(idx + 1).padStart(2, '0')}</span>
-        </td>
-        <td>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: `var(--c-${tier})`, flexShrink: 0 }} />
-            <div>
-              <div style={{ fontWeight: 600, color: 'var(--c-ink)', letterSpacing: '-0.005em', fontSize: 14 }}>
-                {match.sdn_name}
-              </div>
-              {match.best_alias_name && match.best_alias_name !== match.sdn_name && (
-                <div style={{ fontSize: 12, color: 'var(--c-muted)', marginTop: 3 }}>
-                  aka <span className="s-mono">{match.best_alias_name}</span>
-                </div>
-              )}
-            </div>
-          </div>
-        </td>
-        <td className="s-num" style={{ fontSize: 12, color: 'var(--c-muted)' }}>
-          {match.sdn_type === 'entity' ? 'Entity' : match.sdn_type === 'individual' ? 'Individual' : (match.sdn_type ?? '—')}
-        </td>
-        <td className="s-mono" style={{ fontSize: 11, color: 'var(--c-ink-2)' }}>
-          {match.program ?? '—'}
-        </td>
-        <td style={{ width: 170 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 90 }}>
-            <div className="s-bar" style={{ flex: 1 }}>
-              <i style={{ width: `${Math.max(2, match.weighted_score * 100)}%`, background: `var(--c-${tier})` } as React.CSSProperties} />
-            </div>
-            <span className="s-num" style={{ fontSize: 11, color: 'var(--c-ink)', minWidth: 38, textAlign: 'right' }}>
-              {match.weighted_score.toFixed(3)}
-            </span>
-          </div>
-        </td>
-        <td style={{ width: 110 }}>
-          <span className={`s-tier s-tier-${tier}`}>
-            <span className="s-tier-dot" />
-            {tier}
-          </span>
-        </td>
-        <td style={{ width: 32, textAlign: 'right', color: 'var(--c-dim)' }}>
-          <svg width="11" height="11" viewBox="0 0 10 10" style={{ transform: isOpen ? 'rotate(180deg)' : undefined, transition: 'transform 120ms' }}>
-            <path d="M2 3.5l3 3 3-3" stroke="currentColor" fill="none" strokeWidth="1.4" />
-          </svg>
-        </td>
-      </tr>
-      {isOpen && (
-        <tr className="s-rowexp">
-          <td colSpan={7}>
-            <div className="s-rowexp-inner">
-              <ExpandedDetail match={match} />
-            </div>
-          </td>
-        </tr>
-      )}
-    </>
-  );
-}
-
-function ExpandedDetail({ match }: { match: Match }) {
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr', gap: 32 }}>
-      <div>
-        <div className="s-eyebrow" style={{ marginBottom: 8 }}>Identity</div>
-        <DefLine label="SDN #"   value={`#${match.ent_num}`}                                  mono />
-        <DefLine label="Type"    value={match.sdn_type ?? '—'} />
-        <DefLine label="Program" value={match.program ?? '—'}                                  mono />
-        {match.best_alias_name && match.best_alias_name !== match.sdn_name && (
-          <DefLine label="Best alias" value={match.best_alias_name} mono />
-        )}
-      </div>
-      <div>
-        <div className="s-eyebrow" style={{ marginBottom: 8 }}>Score decomposition</div>
-        <ScoreLine label="Primary"    weight={0.4} value={match.primary_name_score} />
-        <ScoreLine label="Best alias" weight={0.4} value={match.best_alias_score} />
-        <ScoreLine label="Phonetic"   weight={0.2} value={match.phonetic_score} />
-        <div
-          style={{
-            borderTop: '1px solid var(--c-line-2)',
-            paddingTop: 6,
-            marginTop: 6,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}
-        >
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--c-ink)' }}>Weighted</span>
-          <span
-            style={{
-              fontFamily: 'var(--font-mono)',
-              fontSize: 14,
-              fontWeight: 600,
-              color: `var(--c-${match.match_tier})`,
-            }}
-          >
-            {match.weighted_score.toFixed(3)}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function DefLine({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '96px 1fr', gap: 12, padding: '3px 0', fontSize: 12 }}>
-      <span
-        style={{
-          color: 'var(--c-muted)',
-          fontFamily: 'var(--font-mono)',
-          fontSize: 10,
-          letterSpacing: '0.08em',
-          textTransform: 'uppercase',
-        }}
-      >
-        {label}
-      </span>
-      <span className={mono ? 's-mono' : ''} style={{ color: 'var(--c-ink)' }}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function ScoreLine({ label, weight, value }: { label: string; weight: number; value: number }) {
-  return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 12,
-        padding: '3px 0',
-        fontSize: 12,
-      }}
-    >
-      <div>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--c-ink-2)' }}>{label}</span>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--c-dim)', marginLeft: 6 }}>
-          ×{weight.toFixed(2)}
-        </span>
-      </div>
-      <div style={{ flex: 1, maxWidth: 140 }}>
-        <div className="s-bar"><i style={{ width: `${value * 100}%` }} /></div>
-      </div>
-      <span className="s-num" style={{ fontSize: 11, color: 'var(--c-ink)', minWidth: 38, textAlign: 'right' }}>
-        {value.toFixed(3)}
-      </span>
-    </div>
-  );
-}
-
-function ScoringMethodology() {
-  return (
-    <div className="s-panel">
-      <div className="s-panel-head">
-        <span className="s-eyebrow s-eyebrow-ink">Scoring methodology</span>
-        <span className="s-eyebrow">levenshtein · soundex · containment</span>
-      </div>
-      <div style={{ padding: 18, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 32 }}>
-        <div>
-          <div className="s-eyebrow" style={{ marginBottom: 8 }}>Weighted formula</div>
-          <div className="s-mono" style={{ fontSize: 12, lineHeight: 1.8, color: 'var(--c-ink)' }}>
-            <div>primary_name_score × 0.40</div>
-            <div>+ best_alias_score × 0.40</div>
-            <div>+ phonetic_score × 0.20</div>
-          </div>
-        </div>
-        <div>
-          <div className="s-eyebrow" style={{ marginBottom: 8 }}>Tier thresholds</div>
-          <div className="s-mono" style={{ fontSize: 12, lineHeight: 1.8 }}>
-            <div><span style={{ color: 'var(--c-strong)' }}>strong</span>{'   '}≥ 0.80</div>
-            <div><span style={{ color: 'var(--c-probable)' }}>probable</span> ≥ 0.65</div>
-            <div><span style={{ color: 'var(--c-weak)' }}>weak</span>{'     '}≥ 0.40</div>
-            <div><span style={{ color: 'var(--c-dim)' }}>noise</span>{'    '}&lt; 0.40</div>
-          </div>
-        </div>
-        <div style={{ gridColumn: '1 / -1', fontSize: 13, color: 'var(--c-ink-2)', lineHeight: 1.6, paddingTop: 8, borderTop: '1px solid var(--c-line)' }}>
-          Levenshtein distance produces an edit-similarity score against the entity&apos;s primary name and its best-matching alias. Tokenized Soundex flags transliteration variants across word boundaries. Substring containment applies a 0.60 floor when the query is literally inside the name, protecting partial-name matches from length-penalty artifacts.
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ResultsSkeleton() {
-  return (
-    <div className="s-panel" style={{ padding: 0 }}>
-      <div className="s-panel-head">
-        <span className="s-eyebrow s-eyebrow-ink">Screening…</span>
-      </div>
-      <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {[1, 2, 3, 4].map((i) => (
-          <div
-            key={i}
-            style={{
-              height: 56,
-              background: 'var(--c-surface-2)',
-              border: '1px solid var(--c-line)',
-              opacity: 0.6,
-              animation: 's-pulse 1.4s ease-in-out infinite',
-            }}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────
-
-function thresholdToTier(t: number): 'noise' | 'weak' | 'probable' | 'strong' {
-  if (t >= 0.8) return 'strong';
-  if (t >= 0.65) return 'probable';
-  if (t >= 0.4) return 'weak';
-  return 'noise';
-}
-
-function formatRefreshDate(iso: string): string {
+function formatDate(iso: string): string {
   try {
-    const d = new Date(iso);
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   } catch {
     return 'recently';
   }
-}
-
-function exportToCSV(results: ScreenResponse) {
-  const headers = [
-    'Rank',
-    'Entity Name',
-    'Best Alias',
-    'Type',
-    'Program',
-    'Primary Score',
-    'Alias Score',
-    'Phonetic Score',
-    'Weighted Score',
-    'Tier',
-    'SDN Number',
-  ];
-
-  const escape = (v: string | number | null | undefined): string => {
-    if (v === null || v === undefined) return '';
-    const s = String(v);
-    if (s.includes(',') || s.includes('"') || s.includes('\n')) {
-      return `"${s.replace(/"/g, '""')}"`;
-    }
-    return s;
-  };
-
-  const rows = results.matches.map((m, i) => [
-    i + 1,
-    escape(m.sdn_name),
-    escape(m.best_alias_name),
-    escape(m.sdn_type),
-    escape(m.program),
-    m.primary_name_score.toFixed(4),
-    m.best_alias_score.toFixed(4),
-    m.phonetic_score.toFixed(4),
-    m.weighted_score.toFixed(4),
-    m.match_tier,
-    m.ent_num,
-  ]);
-
-  const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  const stamp = new Date().toISOString().split('T')[0];
-  const safeQuery = results.query.replace(/[^a-z0-9]/gi, '-').slice(0, 40);
-  link.setAttribute('download', `sentinel-${safeQuery}-${stamp}.csv`);
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
 }
