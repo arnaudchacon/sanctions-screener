@@ -3,15 +3,23 @@
 
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ScreenResponse, Stats, Program } from '@/lib/types';
 import { ThresholdSlider } from '@/components/ThresholdSlider';
 import { ResultsTable } from '@/components/ResultsTable';
 import { ScoringMethodology } from '@/components/ScoringMethodology';
 import { BatchScreen } from '@/components/BatchScreen';
+import { ScoreStrip } from '@/components/ScoreStrip';
+import { EntityDossier } from '@/components/EntityDossier';
 import { RecentScreenings, ProgramsList, AuditLog, type HistoryItem } from '@/components/Sidebar';
 import { TIER_COLOR } from '@/components/TierBadge';
 import { downloadCsv } from '@/lib/csv';
+
+// Single-name mode fetches ALL candidates once at this floor, then the
+// threshold slider filters client-side — moving it re-slices instantly and
+// the distribution strip shows what the cut includes and excludes.
+const FETCH_FLOOR = 0.1;
+const FETCH_LIMIT = 100;
 
 const EXAMPLE_QUERIES = ['Vladimir Putin', 'Aerocaribbean Airlines', 'Mohammed', 'Banco Nacional'];
 const HISTORY_KEY = 'sentinel.history.v1';
@@ -23,13 +31,14 @@ export default function HomePage() {
   const [query, setQuery] = useState('');
   const [threshold, setThreshold] = useState(0.5);
   const [program, setProgram] = useState('');
-  const [results, setResults] = useState<ScreenResponse | null>(null);
+  const [candidates, setCandidates] = useState<ScreenResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [programs, setPrograms] = useState<Program[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [auditVersion, setAuditVersion] = useState(0);
+  const [dossierEnt, setDossierEnt] = useState<number | null>(null);
 
   useEffect(() => {
     fetch('/api/stats')
@@ -59,8 +68,8 @@ export default function HomePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query: q,
-          min_score: threshold,
-          max_results: 25,
+          min_score: FETCH_FLOOR,
+          max_results: FETCH_LIMIT,
           program: program.trim() || null,
         }),
       });
@@ -69,11 +78,12 @@ export default function HomePage() {
         throw new Error(data.error || 'Search failed');
       }
       const data: ScreenResponse = await response.json();
-      setResults(data);
+      setCandidates(data);
+      const aboveNow = data.matches.filter((m) => m.weighted_score >= threshold);
       const entry: HistoryItem = {
         q,
-        n: data.match_count,
-        tier: data.matches[0]?.match_tier ?? 'noise',
+        n: aboveNow.length,
+        tier: aboveNow[0]?.match_tier ?? 'noise',
         at: Date.now(),
       };
       const next = [entry, ...history.filter((h) => h.q !== q)].slice(0, 8);
@@ -81,11 +91,18 @@ export default function HomePage() {
       try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)); } catch {}
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
-      setResults(null);
+      setCandidates(null);
     } finally {
       setLoading(false);
     }
   }
+
+  // The visible result set: candidates re-cut by the live threshold.
+  const results = useMemo<ScreenResponse | null>(() => {
+    if (!candidates) return null;
+    const matches = candidates.matches.filter((m) => m.weighted_score >= threshold);
+    return { ...candidates, min_score: threshold, match_count: matches.length, matches };
+  }, [candidates, threshold]);
 
   const tierCounts = results
     ? {
@@ -241,8 +258,15 @@ export default function HomePage() {
             )}
 
             {/* Single-mode results */}
-            {mode === 'single' && results && (
+            {mode === 'single' && results && candidates && (
               <>
+                {/* Score distribution — click to move the threshold */}
+                <ScoreStrip
+                  matches={candidates.matches}
+                  threshold={threshold}
+                  onThresholdChange={setThreshold}
+                />
+
                 {/* Print-only report header */}
                 <div className="hidden print:block border-b border-border pb-4">
                   <h2 className="font-serif text-[22px] text-text-primary">Screening report</h2>
@@ -288,6 +312,7 @@ export default function HomePage() {
                 <ResultsTable
                   results={results}
                   onDispositionChange={() => setAuditVersion((v) => v + 1)}
+                  onOpenDossier={setDossierEnt}
                 />
               </>
             )}
@@ -297,6 +322,8 @@ export default function HomePage() {
           </section>
         </div>
       </div>
+
+      <EntityDossier entNum={dossierEnt} onClose={() => setDossierEnt(null)} />
     </main>
   );
 }

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { Match, ScreenResponse } from '@/lib/types';
 import { TierBadge, TierDot, TIER_COLOR } from './TierBadge';
+import { MatchExplanation } from './MatchExplanation';
 import {
   getDisposition,
   setDisposition,
@@ -25,9 +26,11 @@ const DISPOSITION_COLOR: Record<Disposition, string> = {
 export function ResultsTable({
   results,
   onDispositionChange,
+  onOpenDossier,
 }: {
   results: ScreenResponse;
   onDispositionChange?: () => void;
+  onOpenDossier?: (entNum: number) => void;
 }) {
   const [openId, setOpenId] = useState<number | null>(null);
   // Bump to re-read localStorage-backed dispositions after a change.
@@ -74,6 +77,7 @@ export function ResultsTable({
               isOpen={openId === m.ent_num}
               onToggle={() => setOpenId(openId === m.ent_num ? null : m.ent_num)}
               onChanged={changed}
+              onOpenDossier={onOpenDossier}
             />
           ))}
         </tbody>
@@ -89,6 +93,7 @@ function Row({
   isOpen,
   onToggle,
   onChanged,
+  onOpenDossier,
 }: {
   match: Match;
   idx: number;
@@ -96,6 +101,7 @@ function Row({
   isOpen: boolean;
   onToggle: () => void;
   onChanged: () => void;
+  onOpenDossier?: (entNum: number) => void;
 }) {
   const disposition = getDisposition(query, match.ent_num);
 
@@ -181,6 +187,14 @@ function Row({
                 {match.best_alias_name && match.best_alias_name !== match.sdn_name && (
                   <DefLine label="Best alias" value={match.best_alias_name} mono />
                 )}
+                {onOpenDossier && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onOpenDossier(match.ent_num); }}
+                    className="mt-2 text-[12px] font-medium text-accent hover:text-accent-hover transition-colors duration-100 no-print"
+                  >
+                    Open full dossier — aliases, addresses, identifiers →
+                  </button>
+                )}
 
                 <div className="eyebrow mb-2 mt-5">Disposition</div>
                 <div className="flex flex-wrap gap-2 no-print">
@@ -223,21 +237,27 @@ function Row({
                 )}
               </div>
 
-              {/* Score decomposition */}
-              <div>
-                <div className="eyebrow mb-2.5">Score decomposition</div>
-                <ScoreLine label="Primary name" weight={0.4} value={match.primary_name_score} />
-                <ScoreLine label="Best known name" weight={0.4} value={match.best_alias_score} />
-                <ScoreLine label="Phonetic" weight={0.2} value={match.phonetic_score} />
-                <div className="border-t border-border-strong pt-2 mt-2 flex items-center justify-between">
-                  <span className="font-mono text-[11px] text-text-primary">Weighted</span>
-                  <span
-                    className="font-mono text-[14px] font-semibold tabular-nums"
-                    style={{ color: TIER_COLOR[match.match_tier] }}
-                  >
-                    {match.weighted_score.toFixed(3)}
-                  </span>
+              {/* Score decomposition + explanation */}
+              <div className="flex flex-col gap-5">
+                <div>
+                  <div className="eyebrow mb-2.5">Score decomposition</div>
+                  <ScoreLine label="Primary name" weight={0.4} value={match.primary_name_score} />
+                  <ScoreLine label="Best known name" weight={0.4} value={match.best_alias_score} />
+                  <ScoreLine label="Phonetic" weight={0.2} value={match.phonetic_score} />
+                  <div className="border-t border-border-strong pt-2 mt-2 flex items-center justify-between">
+                    <span className="font-mono text-[11px] text-text-primary">Weighted</span>
+                    <span
+                      className="font-mono text-[14px] font-semibold tabular-nums"
+                      style={{ color: TIER_COLOR[match.match_tier] }}
+                    >
+                      {match.weighted_score.toFixed(3)}
+                    </span>
+                  </div>
                 </div>
+                <MatchExplanation
+                  query={query}
+                  name={match.best_alias_name && match.best_alias_score > match.primary_name_score ? match.best_alias_name : match.sdn_name}
+                />
               </div>
             </div>
           </td>

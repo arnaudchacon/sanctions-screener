@@ -36,8 +36,10 @@
   --tier-strong-bg:   #FCF2F2;
   --tier-probable:    #B8860B;
   --tier-probable-bg: #FCF8EC;
-  --tier-weak:        #5A6B8C;
-  --tier-weak-bg:     #F1F3F7;
+  /* Weak nudged to chroma ≥ 0.1 (was #5A6B8C, which read as gray in the
+     score distribution — validated with the dataviz palette checker). */
+  --tier-weak:        #3D69C2;
+  --tier-weak-bg:     #EFF3FA;
   --tier-noise:       #8A847A;
   --tier-noise-bg:    #F2EEE8;
 

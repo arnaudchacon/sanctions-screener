@@ -6,7 +6,9 @@ Shares a design system with [HubSpot Health Check](https://github.com/arnaudchac
 
 ## What it does
 
-- **Single-name screening** — type a name, get ranked candidates from ~19,000 sanctioned entities and ~20,000 aliases, each scored 0–1 and bucketed into **strong / probable / weak / noise** tiers, with a full per-signal score decomposition.
+- **Single-name screening** — type a name, get ranked candidates from ~19,000 sanctioned entities and ~20,000 aliases, each scored 0–1 and bucketed into **strong / probable / weak / noise** tiers, with a full per-signal score decomposition and a token-alignment view of *why* each candidate matched.
+- **Instant threshold with a score distribution** — all candidates are fetched once at a 0.10 floor and plotted on a distribution strip; moving the threshold (slider or clicking the strip) re-cuts the results instantly, client-side, showing exactly which candidates the cut includes and excludes.
+- **Entity dossiers** — every hit opens a full SDN dossier: parsed identifiers from OFAC remarks (date/place of birth, nationality, passports), every known alias, every address, and a link to the official OFAC entry.
 - **Batch screening** — paste up to 100 names (or upload a CSV) and screen the whole list in one run: per-name top hit, tier summary (flagged / to review / clear), expandable candidates, batch CSV export.
 - **Adjudication** — every hit takes an analyst disposition (confirm / clear as false positive / escalate), stored in the browser and exportable as an audit-log CSV. A print stylesheet turns any result set into a screening report PDF.
 
